@@ -1,0 +1,105 @@
+# DJM: Lychee 7 voor de fotosite van de vereniging. Gebaseerd op ../docker-compose.minimal.yaml,
+# zonder gezichtsherkenning. Geheimen staan in .env (niet in git), zie .env.voorbeeld.
+# Image: ons eigen build uit deze fork (.github/workflows/djm-image.yml), zodat we niet op upstream
+# hoeven te wachten als PHP een beveiligingsfix krijgt.
+
+x-lychee: &lychee
+  image: ${LYCHEE_IMAGE:-ghcr.io/sjkanon/lychee-djm:latest-legacy}
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+    - seccomp:unconfined
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - SETGID
+    - SETUID
+    - DAC_OVERRIDE
+    - NET_BIND_SERVICE
+  tmpfs:
+    - /tmp:noexec,nosuid,nodev,size=100m
+  volumes:
+    - ./uploads:/app/public/uploads
+    - ./logs:/app/storage/logs
+    - ./tmp:/app/storage/tmp
+    - ./storage-app:/app/storage/app
+  networks:
+    - intern
+
+x-env: &env
+  PUID: "${PUID:-33}"
+  PGID: "${PGID:-33}"
+  APP_KEY: "${APP_KEY:?APP_KEY ontbreekt in .env}"
+  APP_NAME: "${APP_NAME:-Lychee}"
+  APP_ENV: production
+  APP_TIMEZONE: Europe/Amsterdam
+  APP_URL: "${APP_URL:?APP_URL ontbreekt in .env}"
+  APP_FORCE_HTTPS: "true"
+  TRUSTED_PROXIES: "${TRUSTED_PROXIES:?TRUSTED_PROXIES ontbreekt in .env}"
+  DB_CONNECTION: mysql
+  DB_HOST: lychee_db
+  DB_PORT: "3306"
+  DB_DATABASE: lychee
+  DB_USERNAME: lychee
+  DB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD ontbreekt in .env}"
+  QUEUE_CONNECTION: database
+  AI_VISION_ENABLED: "false"
+
+services:
+  lychee:
+    <<: *lychee
+    container_name: lychee
+    ports:
+      - "${APP_PORT:-8080}:8000"
+    volumes:
+      - ./uploads:/app/public/uploads
+      - ./logs:/app/storage/logs
+      - ./tmp:/app/storage/tmp
+      - ./storage-app:/app/storage/app
+      - ./config/user.css:/app/public/dist/user.css
+      - ./config/custom.js:/app/public/dist/custom.js
+    environment:
+      <<: *env
+    depends_on:
+      lychee_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/up"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  lychee_worker:
+    <<: *lychee
+    container_name: lychee-worker
+    environment:
+      <<: *env
+      LYCHEE_MODE: worker
+    depends_on:
+      lychee:
+        condition: service_healthy
+
+  lychee_db:
+    image: mariadb:11.8
+    container_name: lychee_db
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: lychee
+      MARIADB_USER: lychee
+      MARIADB_PASSWORD: "${DB_PASSWORD}"
+      MARIADB_ROOT_PASSWORD: "${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD ontbreekt in .env}"
+    volumes:
+      - ./mysql:/var/lib/mysql
+    networks:
+      - intern
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  intern:
+    driver: bridge
