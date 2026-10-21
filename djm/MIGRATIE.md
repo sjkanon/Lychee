@@ -5,7 +5,7 @@ FrankenPHP op poort 8000 en andere paden, en weigert te starten met de oude volu
 
 ## Vooraf
 
-- Er is een image met PHP ≥ 8.4.27 (PHP2Shell, CVE-2026-109618/109619). Controle:
+- Er is een image met gepatchte PHP (PHP2Shell, CVE-2026-109618/109619): 8.5.12 of hoger in de legacy-variant. Controle:
   `docker run --rm --entrypoint php <image> -r 'echo PHP_VERSION;'`
 - Backup van database (`mariadb-dump --single-transaction lychee`) en van de map met `uploads`, `config`,
   `sym` en `docker-compose.yml`. Plus een Proxmox-backup van de VM.
