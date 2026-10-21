@@ -4,6 +4,10 @@ Nieuwste bovenaan.
 
 ## 2026-10-21
 
+- **Fotosite naar Lychee 7.11.1** (legacy-image, PHP 8.5.12) met `migreer-v7.sh`: 540 foto's, 5 albums, worker
+  draait, start/gallery 200. Eerste poging stopte op een 404: upstream-`.gitignore` negeert `docker-compose.yml` en
+  `.env.*`, dus die zijn nu geforceerd toegevoegd. Tweede poging: migraties duurden ruim 3 minuten, de worker wachtte
+  op healthy en `up` gaf op; met de hand afgemaakt. `start_period` nu 600 s. Snapshot `voor-lychee7` op de VM.
 - `djm-image.yml` bouwt standaard de **legacy-variant** (`Dockerfile-legacy`: nginx + PHP-FPM 8.5 uit Sury). Die
   heeft de PHP-fix meteen bij opnieuw bouwen; FrankenPHP liep achter. Lokaal gebouwd: Lychee 7.11.1, PHP 8.5.12,
   embed aanwezig. Pushen alleen als PHP de nieuwste patch van zijn branch is (php.net). Compose wijst naar

@@ -69,7 +69,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 600s
 
   lychee_worker:
     <<: *lychee
