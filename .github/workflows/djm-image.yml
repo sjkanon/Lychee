@@ -1,0 +1,109 @@
+# DJM: eigen Lychee-image bouwen naar ghcr.io/sjkanon/lychee-djm (zie djm/README.md).
+# Draait op GitHub-runners (openbare fork, geen eigen runner, geen geheimen behalve GITHUB_TOKEN).
+# Varianten: legacy (Dockerfile-legacy: nginx + PHP-FPM uit Sury, krijgt PHP-fixes meteen bij opnieuw bouwen)
+# en frankenphp (Dockerfile; met `frankenphp` kan de basis vervangen worden door een nieuwere build dan upstream
+# vastzet). Er wordt alleen gepusht als PHP in het image de nieuwste patch van zijn branch is (php.net),
+# of minstens `min_php` als dat is opgegeven.
+name: djm-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "legacy of frankenphp"
+        required: false
+        default: "legacy"
+      frankenphp:
+        description: "Alleen frankenphp: andere basis, bijv. dunglas/frankenphp:1.13.1-php8.4-trixie"
+        required: false
+        default: ""
+      min_php:
+        description: "Minimale PHP-versie (leeg = nieuwste patch van php.net)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: djm-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      IMAGE: ghcr.io/sjkanon/lychee-djm
+      VARIANT: ${{ inputs.variant || 'legacy' }}
+      FRANKENPHP: ${{ inputs.frankenphp }}
+      MIN_PHP: ${{ inputs.min_php }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: devel
+
+      - name: Variant kiezen
+        id: v
+        run: |
+          set -euo pipefail
+          case "$VARIANT" in
+            legacy) echo "file=Dockerfile-legacy" >> "$GITHUB_OUTPUT"; echo "suffix=-legacy" >> "$GITHUB_OUTPUT" ;;
+            frankenphp) echo "file=Dockerfile" >> "$GITHUB_OUTPUT"; echo "suffix=" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::onbekende variant: $VARIANT"; exit 1 ;;
+          esac
+
+      - name: Basis vervangen
+        if: env.VARIANT == 'frankenphp' && env.FRANKENPHP != ''
+        run: |
+          set -euo pipefail
+          [[ $FRANKENPHP =~ ^dunglas/frankenphp:[A-Za-z0-9._-]+$ ]] || { echo "::error::ongeldige basis: $FRANKENPHP"; exit 1; }
+          sed -i -E "s#^FROM dunglas/frankenphp:[^ ]+#FROM $FRANKENPHP#" Dockerfile
+          grep -n '^FROM dunglas/frankenphp' Dockerfile
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Bouwen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ steps.v.outputs.file }}
+          load: true
+          pull: true
+          no-cache: true
+          tags: lychee-djm:test
+
+      - name: PHP-versie controleren
+        id: php
+        run: |
+          set -euo pipefail
+          V=$(docker run --rm --entrypoint php lychee-djm:test -r 'echo PHP_VERSION;')
+          L=$(grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+' version.md)
+          if [ -z "$MIN_PHP" ]; then
+            MIN_PHP=$(curl -fsS "https://www.php.net/releases/index.php?json&version=${V%.*}" | jq -r .version)
+          fi
+          echo "Lychee $L ($VARIANT), PHP $V, minimaal $MIN_PHP" | tee -a "$GITHUB_STEP_SUMMARY"
+          ok=$(docker run --rm --entrypoint php lychee-djm:test -r "echo version_compare(PHP_VERSION, '$MIN_PHP', '>=') ? 'ja' : 'nee';")
+          [ "$ok" = ja ] || { echo "::error::PHP $V is lager dan $MIN_PHP; niet gepusht"; exit 1; }
+          echo "php=$V" >> "$GITHUB_OUTPUT"
+          echo "lychee=$L" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pushen
+        run: |
+          set -euo pipefail
+          S="${{ steps.v.outputs.suffix }}"
+          T="v${{ steps.php.outputs.lychee }}$S-php${{ steps.php.outputs.php }}"
+          for t in "latest$S" "$T"; do
+            docker tag lychee-djm:test "$IMAGE:$t"
+            docker push "$IMAGE:$t"
+          done
+          echo "Gepusht: $IMAGE:latest$S en $IMAGE:$T" | tee -a "$GITHUB_STEP_SUMMARY"
