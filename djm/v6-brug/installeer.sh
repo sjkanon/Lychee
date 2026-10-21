@@ -14,11 +14,15 @@ docker build -q -t lychee-v6-brug:local v6-brug >/dev/null
 V=$(docker run --rm --entrypoint php lychee-v6-brug:local -r 'echo PHP_VERSION;')
 echo "Brug-image: PHP $V"
 
-cp -n docker-compose.yml "docker-compose.yml.voor-brug"
+[ -e docker-compose.yml.voor-brug ] || cp docker-compose.yml docker-compose.yml.voor-brug
 # Alleen de image-regel van de dienst lychee (niet die van de database).
 sed -i -E '/^  lychee:/,/^  [a-z_]+:/ s#^(    image: ).*lycheeorg/lychee.*#\1lychee-v6-brug:local#' docker-compose.yml
 grep -q 'image: lychee-v6-brug:local' docker-compose.yml || { echo "image-regel niet gevonden" >&2; exit 1; }
 
+# docker-compose 1.29 crasht bij het vervangen van een container met een nieuwer Docker (KeyError 'ContainerConfig')
+# en laat dan een hernoemde, gestopte container achter. Daarom eerst weghalen; de gegevens staan in de mappen.
+docker ps -aq --filter 'name=_lychee$' | xargs -r docker rm -f
+$DC rm -sf lychee
 $DC up -d lychee
 for _ in $(seq 1 30); do
 	S=$(docker inspect lychee --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')
