@@ -97,7 +97,7 @@ declare namespace App {
 		export type ImageOrientation = "portrait" | "landscape" | "square" | "unknown";
 		export type ImageOverlayType = "none" | "desc" | "date" | "exif";
 		export type InsightsPeriodType = "library" | "year" | "range";
-		export type JobStatus = 0 | 1 | 2 | 3;
+		export type JobStatus = 0 | 1 | 2 | 3 | 4;
 		export type LandingAnimationPreset = "none" | "classic_fade" | "zoom_in" | "parallax_scroll" | "slide_reveal";
 		export type LandingBackgroundModeType = "static" | "photo_id" | "random" | "latest_album_cover" | "random_from_album";
 		export type LandingCtaPosition = "top-left" | "top" | "top-right" | "left" | "center" | "right" | "bottom-left" | "bottom" | "bottom-right";
@@ -260,6 +260,7 @@ declare namespace App {
 			| "last_capture";
 		export type TimelinePhotoGranularity = "default" | "disabled" | "year" | "month" | "day" | "hour";
 		export type TitleBucketMode = "date_prefix" | "alphabetical";
+		export type UploadStatus = "processing" | "completed" | "duplicate" | "skipped" | "failed" | "unknown";
 		export type UserGroupRole = "member" | "admin";
 		export type UserSharedAlbumsVisibility = "default" | "show" | "separate" | "separate_shared_only" | "hide";
 		export type UserUploadTrustLevel = "check" | "monitor" | "trust_but_verify" | "trusted";
@@ -702,6 +703,8 @@ declare namespace App {
 					album_decoration: App.Enum.AlbumDecorationType;
 					album_decoration_orientation: App.Enum.AlbumDecorationOrientation;
 					number_albums_per_row_mobile: 1 | 2 | 3;
+					album_thumb_min_width: number;
+					album_thumb_gap: number;
 					photo_thumb_info: App.Enum.PhotoThumbInfoType;
 					is_photo_thumb_tags_enabled: boolean;
 					is_rounded_corners_enabled: boolean;
@@ -790,7 +793,6 @@ declare namespace App {
 					is_album_header_landing_title_enabled: boolean;
 					use_admin_dashboard: boolean;
 					is_person_album_enabled: boolean;
-					is_struct_of_array_enabled: boolean;
 					is_cover_id_flag_enabled: boolean;
 					is_header_id_flag_enabled: boolean;
 					is_highlighted_flag_enabled: boolean;
@@ -1273,7 +1275,7 @@ declare namespace App {
 				};
 				export type JobHistoryResource = {
 					username: string;
-					status: "ready" | "success" | "failure" | "started";
+					status: "ready" | "success" | "failure" | "started" | "skipped";
 					created_at: string;
 					updated_at: string;
 					job: string;
@@ -1517,6 +1519,12 @@ declare namespace App {
 					id: number;
 					name: string;
 					url: string;
+				};
+				export type UploadStatusResource = {
+					expected_id: string;
+					status: App.Enum.UploadStatus;
+					photo_id: string | null;
+					message: string | null;
 				};
 				export type UserGroupResource = {
 					id: number;
@@ -2082,6 +2090,8 @@ declare namespace App {
 					grants_downloads: boolean[];
 					grants_uploads: boolean[];
 					created_ats: string[];
+					min_taken_ats: (string | null)[];
+					max_taken_ats: (string | null)[];
 				};
 				export type AlbumListResource = {
 					ids: string[];
@@ -2105,6 +2115,9 @@ declare namespace App {
 				export type AlbumRootConfigResource = {
 					config: App.Http.Resources.GalleryConfigs.RootConfig;
 					rights: App.Http.Resources.Rights.RootAlbumRightsResource;
+				};
+				export type AssetUrlResource = {
+					url: string;
 				};
 				export type FaceQueueResource = {
 					ids: string[];
@@ -2233,6 +2246,11 @@ declare namespace App {
 					rating_users?: (number | null)[];
 					thumb_infos?: (string | null)[];
 					tags?: string[][];
+				};
+				export type PhotoUrlResource = {
+					ids: string[];
+					grid_urls: (string | null)[];
+					thumb_urls: (string | null)[];
 				};
 				export type SearchPhotoResource = {
 					ids: string[];

@@ -262,6 +262,11 @@ const baseConfig = {
 	 * Vitest (bundled with Vite+, run with `vp test`): frontend unit tests sit
 	 * next to the module they cover as `*.test.ts` under resources/js (Feature
 	 * 097). `e2e/` holds Playwright specs, which Vitest must not pick up.
+	 *
+	 * Vitest's hint to reuse jsdom (`isolate: false` or `pool: 'vmThreads'`) is
+	 * declined: about half the test files rely on `vi.mock`, which leaks between
+	 * files once they share a module graph (`isolate: false` failed 19 tests on
+	 * 4 workers, 2026-11-15). Per-file isolation costs about 0.5 s of wall time.
 	 */
 	test: {
 		include: ["resources/js/**/*.test.ts"],
@@ -283,6 +288,10 @@ const baseConfig = {
 				// picks for dark mode) - Lychee always wants white text on the primary
 				// solid button regardless of color scheme.
 				button: { compoundVariants: [{ color: "primary", variant: "solid", class: "text-white" }] },
+				// Nuxt UI's default `min-h-[calc(100vh-…)]` uses the large viewport on mobile, so
+				// a `UMain` overflowed below the browser toolbar (e.g. the photo viewer was
+				// off-centre with its bottom overlay hidden). `dvh` tracks the visible viewport.
+				main: { base: "min-h-[calc(100dvh-var(--ui-header-height))]" },
 			},
 		}),
 		vue({ template: { transformAssetUrls: { base: null, includeAbsolute: false } } }),

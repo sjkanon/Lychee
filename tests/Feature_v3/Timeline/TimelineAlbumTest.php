@@ -18,6 +18,7 @@
 
 namespace Tests\Feature_v3\Timeline;
 
+use App\Actions\Album\SyncRecursiveNsfw;
 use App\Models\Configs;
 use App\Models\Photo;
 use Illuminate\Support\Carbon;
@@ -34,12 +35,6 @@ use Tests\Feature_v3\Base\BaseApiWithDataTest;
  */
 class TimelineAlbumTest extends BaseApiWithDataTest
 {
-	public function setUp(): void
-	{
-		parent::setUp();
-		config(['features.struct-of-array' => true]);
-	}
-
 	// ── Access gating (F-066-03, S-066-02, S-066-03) ────────────────
 
 	public function testGuestDeniedByDefault(): void
@@ -300,6 +295,7 @@ class TimelineAlbumTest extends BaseApiWithDataTest
 
 		$this->album1->is_nsfw = true;
 		$this->album1->save();
+		(new SyncRecursiveNsfw())->do();
 
 		$sensitive_photo = Photo::factory()->owned_by($this->userMayUpload1)->in($this->album1)->create();
 
@@ -315,5 +311,6 @@ class TimelineAlbumTest extends BaseApiWithDataTest
 		Configs::set('hide_nsfw_in_timeline', '1');
 		$this->album1->is_nsfw = false;
 		$this->album1->save();
+		(new SyncRecursiveNsfw())->do();
 	}
 }

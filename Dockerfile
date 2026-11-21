@@ -5,7 +5,7 @@ ARG NODE_ENV=production
 # ============================================================================
 # Stage 1: Composer Dependencies
 # ============================================================================
-FROM composer:2.10.3@sha256:af98f42dfff7c68ba8d53c2164fd9fde1087b7d449514baa38c418b1f6bc4bac AS composer
+FROM composer:2.11.2@sha256:511d2a96fce74de098b54224d59146fb8b6a7735d4e301f16c87c062e511900d AS composer
 
 WORKDIR /app
 
@@ -50,7 +50,7 @@ RUN composer install \
 # ============================================================================
 # Stage 2: Node.js Build for Frontend Assets
 # ============================================================================
-FROM node:26-alpine@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS node
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS node
 
 # Build argument to control dev vs production build
 ARG NODE_ENV
@@ -79,10 +79,10 @@ RUN npm run build
 # ============================================================================
 # Debian's ImageMagick is built without JPEG XL, so we build our own (ADR-101-01).
 # Bump IMAGEMAGICK_VERSION/IMAGEMAGICK_SHA256 on ImageMagick security releases.
-FROM dunglas/frankenphp:1.13.1-php8-trixie@sha256:a052ae7cccd4a025eca17767e7acac57a4fc660a4f3dfc790be9b9cd5182d6e6 AS imagemagick
+FROM dunglas/frankenphp:1.13.6-php8-trixie@sha256:17ff6554ba6de527d17aa5ec37e2a3bc3b182d7dbea9362f9a02eb5b4a1c4b95 AS imagemagick
 
-ARG IMAGEMAGICK_VERSION=7.1.2-32
-ARG IMAGEMAGICK_SHA256=940e349f0ef394e658fd57400b83d1d7a81b954f6e7bdbfbfad31b2718c10add
+ARG IMAGEMAGICK_VERSION=7.1.2-36
+ARG IMAGEMAGICK_SHA256=5ba807e38a6bcb7c3c96a166485e270c5017aaa6b166f0440dc4b2badf6e6167
 ARG IMAGICK_VERSION=3.8.1
 ARG IMAGICK_SHA256=3a3587c0a524c17d0dad9673a160b90cd776e836838474e173b549ed864352ee
 
@@ -139,7 +139,7 @@ RUN curl -fsSL -o /build/imagick.tgz "https://pecl.php.net/get/imagick-${IMAGICK
 # ============================================================================
 # Stage 4: Production FrankenPHP Image
 # ============================================================================
-FROM dunglas/frankenphp:1.13.1-php8-trixie@sha256:a052ae7cccd4a025eca17767e7acac57a4fc660a4f3dfc790be9b9cd5182d6e6
+FROM dunglas/frankenphp:1.13.6-php8-trixie@sha256:17ff6554ba6de527d17aa5ec37e2a3bc3b182d7dbea9362f9a02eb5b4a1c4b95
 
 ARG USER=appuser
 
@@ -162,6 +162,7 @@ ENV PATH="/opt/imagemagick/bin:${PATH}"
 # hadolint ignore=DL3008,DL3009
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+    apt \
     linux-libc-dev \
     libimage-exiftool-perl \
     ffmpeg \
@@ -268,7 +269,8 @@ RUN mkdir -p storage/framework/cache \
     && echo "max_execution_time=\${PHP_MAX_EXECUTION_TIME:-3000}" >> $PHP_INI_DIR/conf.d/custom.ini \
     && echo "expose_php=Off" >> $PHP_INI_DIR/conf.d/custom.ini \
     && echo "display_errors=Off" >> $PHP_INI_DIR/conf.d/custom.ini \
-    && echo "log_errors=On" >> $PHP_INI_DIR/conf.d/custom.ini
+    && echo "log_errors=On" >> $PHP_INI_DIR/conf.d/custom.ini \
+    && echo "session.upload_progress.enabled=Off" >> $PHP_INI_DIR/conf.d/custom.ini
 
 # Copy entrypoint and validation scripts
 COPY docker/scripts/00-conf-check.sh /usr/local/bin/00-conf-check.sh

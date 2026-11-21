@@ -8,11 +8,15 @@
 
 namespace Tests\Precomputing\CoverSelection;
 
+use App\Events\AlbumListingCacheFlushRequested;
+use App\Events\PhotoListingCacheFlushRequested;
 use App\Models\Album;
+use App\Models\Configs;
 use App\Models\Photo;
 use App\Models\User;
 use App\Services\TitleSplitter;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Tests\Precomputing\Base\BasePrecomputingTest;
 
 /**
@@ -23,14 +27,14 @@ class RecomputeBucketsCommandTest extends BasePrecomputingTest
 {
 	private function setAlbumInstanceDefaults(string $sorting_col = 'created_at', string $granularity = 'year'): void
 	{
-		DB::table('configs')->where('key', '=', 'sorting_albums_col')->update(['value' => $sorting_col]);
-		DB::table('configs')->where('key', '=', 'timeline_albums_granularity')->update(['value' => $granularity]);
+		Configs::set('sorting_albums_col', $sorting_col);
+		Configs::set('timeline_albums_granularity', $granularity);
 	}
 
 	private function setPhotoInstanceDefaults(string $sorting_col = 'created_at', string $granularity = 'year'): void
 	{
-		DB::table('configs')->where('key', '=', 'sorting_photos_col')->update(['value' => $sorting_col]);
-		DB::table('configs')->where('key', '=', 'timeline_photos_granularity')->update(['value' => $granularity]);
+		Configs::set('sorting_photos_col', $sorting_col);
+		Configs::set('timeline_photos_granularity', $granularity);
 	}
 
 	public function testCommandRecomputesBucketKeyForEveryAlbumAgainstAFixture(): void
@@ -96,9 +100,22 @@ class RecomputeBucketsCommandTest extends BasePrecomputingTest
 		$this->assertTrue(true);
 	}
 
+	/**
+	 * Cached listings hold ids read from the rewritten keys (FR-092-15).
+	 */
+	public function testCommandFlushesAlbumAndPhotoListings(): void
+	{
+		Event::fake([AlbumListingCacheFlushRequested::class, PhotoListingCacheFlushRequested::class]);
+
+		$this->artisan('lychee:recompute-buckets')->assertExitCode(0);
+
+		Event::assertDispatched(AlbumListingCacheFlushRequested::class);
+		Event::assertDispatched(PhotoListingCacheFlushRequested::class);
+	}
+
 	public function testRerunAfterAlbumTitleBucketModeConfigChangeUpdatesExistingRows(): void
 	{
-		DB::table('configs')->where('key', '=', 'title_bucket_mode')->update(['value' => 'date_prefix']);
+		Configs::set('title_bucket_mode', 'date_prefix');
 		$this->setAlbumInstanceDefaults(sorting_col: 'title', granularity: 'year');
 		$user = User::factory()->create();
 		$root = Album::factory()->as_root()->owned_by($user)->create();
@@ -110,8 +127,8 @@ class RecomputeBucketsCommandTest extends BasePrecomputingTest
 		// date_prefix mode, unparseable title -> unknown/null.
 		$this->assertNull($child->fresh()->bucket_key);
 
-		DB::table('configs')->where('key', '=', 'title_bucket_mode')->update(['value' => 'alphabetical']);
-		DB::table('configs')->where('key', '=', 'title_bucket_prefix_length')->update(['value' => '1']);
+		Configs::set('title_bucket_mode', 'alphabetical');
+		Configs::set('title_bucket_prefix_length', '1');
 
 		$this->artisan('lychee:recompute-buckets')->assertExitCode(0);
 		// The whole title base: the prefix length applies at read time.
@@ -120,7 +137,7 @@ class RecomputeBucketsCommandTest extends BasePrecomputingTest
 
 	public function testRerunAfterPhotoTitleBucketModeConfigChangeUpdatesExistingRows(): void
 	{
-		DB::table('configs')->where('key', '=', 'photo_title_bucket_mode')->update(['value' => 'date_prefix']);
+		Configs::set('photo_title_bucket_mode', 'date_prefix');
 		$this->setPhotoInstanceDefaults(sorting_col: 'title', granularity: 'year');
 		$user = User::factory()->create();
 		$album = Album::factory()->as_root()->owned_by($user)->create();
@@ -132,8 +149,8 @@ class RecomputeBucketsCommandTest extends BasePrecomputingTest
 		// date_prefix mode, unparseable title -> null/"unknown".
 		$this->assertNull(DB::table('photo_album')->where('photo_id', '=', $photo->id)->first()->bucket_key);
 
-		DB::table('configs')->where('key', '=', 'photo_title_bucket_mode')->update(['value' => 'alphabetical']);
-		DB::table('configs')->where('key', '=', 'photo_title_bucket_prefix_length')->update(['value' => '1']);
+		Configs::set('photo_title_bucket_mode', 'alphabetical');
+		Configs::set('photo_title_bucket_prefix_length', '1');
 
 		$this->artisan('lychee:recompute-buckets')->assertExitCode(0);
 		$this->assertSame('vacation photos', DB::table('photo_album')->where('photo_id', '=', $photo->id)->first()->bucket_key);

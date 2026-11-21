@@ -12,6 +12,7 @@ use App\Actions\Import\FromUrl;
 use App\Actions\Photo\Delete;
 use App\Actions\Photo\MoveOrDuplicate;
 use App\Actions\Photo\Rating;
+use App\Actions\Photo\ResolveUploadStatuses;
 use App\Actions\Photo\Rotate;
 use App\Constants\FileSystem;
 use App\Contracts\Models\AbstractAlbum;
@@ -29,6 +30,7 @@ use App\Http\Requests\Photo\DeletePhotosRequest;
 use App\Http\Requests\Photo\EditPhotoRequest;
 use App\Http\Requests\Photo\FromUrlRequest;
 use App\Http\Requests\Photo\GetPhotoAlbumsRequest;
+use App\Http\Requests\Photo\GetUploadStatusRequest;
 use App\Http\Requests\Photo\MovePhotosRequest;
 use App\Http\Requests\Photo\RenamePhotoRequest;
 use App\Http\Requests\Photo\RotatePhotoRequest;
@@ -41,6 +43,7 @@ use App\Http\Requests\Photo\WatermarkPhotoRequest;
 use App\Http\Resources\Editable\UploadMetaResource;
 use App\Http\Resources\Models\PhotoAlbumResource;
 use App\Http\Resources\Models\PhotoResource;
+use App\Http\Resources\Models\UploadStatusResource;
 use App\Image\Files\NativeLocalFile;
 use App\Image\Files\ProcessableJobFile;
 use App\Image\Files\UploadedFile;
@@ -58,6 +61,7 @@ use App\Policies\AlbumPolicy;
 use App\Policies\PhotoPolicy;
 use App\Repositories\ConfigManager;
 use App\Services\BucketKeys;
+use App\Services\MonthDayKey;
 use App\Services\Telemetry\TraceService;
 use App\Services\TitleSplitter;
 use Illuminate\Routing\Controller;
@@ -188,6 +192,19 @@ class PhotoController extends Controller
 	}
 
 	/**
+	 * Outcome of uploads by their provisional ID (Feature 116).
+	 *
+	 * @return Collection<int,UploadStatusResource>
+	 */
+	public function uploadStatus(GetUploadStatusRequest $request, ResolveUploadStatuses $resolve): Collection
+	{
+		/** @var int|null $user_id */
+		$user_id = Auth::id();
+
+		return $resolve->do($request->photoIds(), $user_id);
+	}
+
+	/**
 	 * Upload a picture from a URL.
 	 */
 	public function fromUrl(FromUrlRequest $request, FromUrl $from_url): string
@@ -232,6 +249,8 @@ class PhotoController extends Controller
 		// if the request takenAt is null, then we set the initial value back.
 		$photo->taken_at = $request->takenAt() ?? $photo->initial_taken_at;
 		$photo->taken_key = BucketKeys::takenKey($photo->taken_at);
+		// FR-106-03: follows the taken date, else the upload date set above.
+		$photo->month_day_key = MonthDayKey::of($photo->taken_at, $photo->created_at);
 
 		// Feature 082: the manual 360° flag, left untouched when not sent (v7).
 		$photo->is_360 = $request->is360() ?? $photo->is_360;

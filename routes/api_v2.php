@@ -124,32 +124,6 @@ Route::get('/Sharing::all', [Gallery\SharingController::class, 'listAll']);
 Route::get('/Sharing::albums', [Gallery\SharingController::class, 'listAlbums']);
 
 /**
- * Embed.
- * Public endpoints for embedding albums on external websites.
- * Note: These routes intentionally have minimal middleware to allow cross-origin embedding.
- * IMPORTANT: More specific routes (stream) must come before generic routes ({album_id}) to avoid conflicts.
- */
-Route::match(['GET', 'OPTIONS'], '/Embed/stream', [Gallery\EmbedController::class, 'getPublicStream'])
-	->withoutMiddleware('api')
-	->middleware([
-		\Illuminate\Http\Middleware\HandleCors::class,
-		\Illuminate\Routing\Middleware\SubstituteBindings::class,
-		'cache_control:900', // 15 minutes cache (longer for stream due to expensive query)
-		'throttle:30,1', // 30 requests per minute per IP (more restrictive)
-	])
-	->name('embed.stream');
-
-Route::match(['GET', 'OPTIONS'], '/Embed/{album_id}', [Gallery\EmbedController::class, 'getAlbum'])
-	->withoutMiddleware('api')
-	->middleware([
-		\Illuminate\Http\Middleware\HandleCors::class,
-		\Illuminate\Routing\Middleware\SubstituteBindings::class,
-		'cache_control:300', // 5 minutes cache (reduced from 1 hour for more frequent updates)
-		'throttle:120,1', // 120 requests per minute per IP
-	])
-	->name('embed.album');
-
-/**
  * IMPORT.
  */
 Route::post('/Import', Admin\ImportFromServerController::class);
@@ -164,6 +138,7 @@ Route::post('/Photo::fromUrl', [Gallery\PhotoController::class, 'fromUrl']);
 Route::post('/Photo', [Gallery\PhotoController::class, 'upload'])
 	->withoutMiddleware(['content_type:json'])
 	->middleware(['content_type:multipart']);
+Route::get('/Photo::uploadStatus', [Gallery\PhotoController::class, 'uploadStatus']);
 Route::patch('/Photo', [Gallery\PhotoController::class, 'update']);
 Route::patch('/Photo::rename', [Gallery\PhotoController::class, 'rename']);
 Route::patch('/Photo::tags', [Gallery\PhotoController::class, 'tags']);
@@ -377,6 +352,9 @@ Route::get('/Maintenance::flushQueue', [Admin\Maintenance\FlushQueue::class, 'ch
 Route::post('/Maintenance::flushQueue', [Admin\Maintenance\FlushQueue::class, 'do']);
 Route::get('/Maintenance::backfillAlbumSizes', [Admin\Maintenance\BackfillAlbumSizes::class, 'check']);
 Route::post('/Maintenance::backfillAlbumSizes', [Admin\Maintenance\BackfillAlbumSizes::class, 'do']);
+Route::post('/Maintenance::recomputeBuckets', [Admin\Maintenance\RecomputeBuckets::class, 'do']);
+Route::get('/Maintenance::recomputeTakenAtRange', [Admin\Maintenance\RecomputeTakenAtRange::class, 'check']);
+Route::post('/Maintenance::recomputeTakenAtRange', [Admin\Maintenance\RecomputeTakenAtRange::class, 'do']);
 
 /**
  * STATISTICS.
