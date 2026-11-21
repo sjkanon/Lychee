@@ -48,6 +48,7 @@
 					<label for="password">{{ $t("dialogs.login.password") }}</label>
 				</FloatLabel>
 				<Message v-if="invalidPassword" severity="error">{{ $t("dialogs.login.unknown_invalid") }}</Message>
+				<Message v-if="too_many_attempts" severity="error">{{ $t("dialogs.gallery_unlock.too_many_attempts") }}</Message>
 			</div>
 			<div class="inline-flex items-center gap-2" :class="props.padding ?? 'px-9'">
 				<Checkbox v-model="rememberMe" input-id="remember_me" :binary="true" />
@@ -113,7 +114,7 @@ import Message from "primevue/message";
 import AuthService from "@/services/auth-service";
 import InputText from "@/v7/components/forms/basic/InputText.vue";
 import InputPassword from "@/v7/components/forms/basic/InputPassword.vue";
-import AlbumService from "@/services/album-service";
+import { useClearViewerState } from "@/composables/useClearViewerState";
 import { useLycheeStateStore } from "@/stores/LycheeState";
 import { storeToRefs } from "pinia";
 import { useTogglablesStateStore } from "@/stores/ModalsState";
@@ -141,11 +142,13 @@ const username = ref("");
 const password = ref("");
 const rememberMe = ref(false);
 const userStore = useUserStore();
+const { clearViewerState } = useClearViewerState();
 const togglableStore = useTogglablesStateStore();
 const lycheeStore = useLycheeStateStore();
 const { is_se_enabled, is_basic_auth_enabled, is_webauthn_enabled, is_white_label_enabled, is_email_login_enabled } = storeToRefs(lycheeStore);
 const { is_login_open, is_webauthn_open } = storeToRefs(togglableStore);
 const invalidPassword = ref(false);
+const too_many_attempts = ref(false);
 
 // With `email_login_enabled` the field accepts a username or an email address.
 const identifierLabel = computed(() => trans(is_email_login_enabled.value ? "dialogs.login.username_or_email" : "dialogs.login.username"));
@@ -153,15 +156,18 @@ const identifierLabel = computed(() => trans(is_email_login_enabled.value ? "dia
 const oauths = ref<OauthProvider[] | undefined>(undefined);
 
 function login() {
+	invalidPassword.value = false;
+	too_many_attempts.value = false;
 	AuthService.login(username.value, password.value, rememberMe.value)
 		.then(() => {
 			is_login_open.value = false;
-			userStore.setUser(undefined);
 			invalidPassword.value = false;
-			AlbumService.clearCache();
+			too_many_attempts.value = false;
+			clearViewerState();
 			emits("logged-in");
 		})
 		.catch((e) => {
+			too_many_attempts.value = e.response?.status === 429;
 			if (e.response && e.response.status === 401) {
 				invalidPassword.value = true;
 			}
@@ -169,6 +175,7 @@ function login() {
 }
 
 function openWebAuthn() {
+	too_many_attempts.value = false;
 	is_login_open.value = false;
 	is_webauthn_open.value = true;
 	username.value = "";

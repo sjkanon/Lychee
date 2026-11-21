@@ -74,6 +74,10 @@ class InitConfig extends Data
 	public AlbumDecorationOrientation $album_decoration_orientation;
 	#[LiteralTypeScriptType('1|2|3')]
 	public int $number_albums_per_row_mobile;
+	// Feature 110 (FR-110-02): v8 album tile minimum width in CSS px.
+	public int $album_thumb_min_width;
+	// Feature 110 (FR-110-16): gap between v8 album tiles in CSS px from 768 px wide.
+	public int $album_thumb_gap;
 	public PhotoThumbInfoType $photo_thumb_info;
 	public bool $is_photo_thumb_tags_enabled;
 	public bool $is_rounded_corners_enabled;
@@ -210,9 +214,6 @@ class InitConfig extends Data
 	public bool $use_admin_dashboard;
 	public bool $is_person_album_enabled;
 
-	// Struct-of-Arrays (SoA) v3 endpoints. Pure client-behavior switch: no DB config layer, no auth-gating. See Feature 058.
-	public bool $is_struct_of_array_enabled;
-
 	// Flags visibility settings
 	public bool $is_cover_id_flag_enabled;
 	public bool $is_header_id_flag_enabled;
@@ -266,6 +267,8 @@ class InitConfig extends Data
 		$this->album_decoration = request()->configs()->getValueAsEnum('album_decoration', AlbumDecorationType::class);
 		$this->album_decoration_orientation = request()->configs()->getValueAsEnum('album_decoration_orientation', AlbumDecorationOrientation::class);
 		$this->number_albums_per_row_mobile = request()->configs()->getValueAsInt('number_albums_per_row_mobile');
+		$this->album_thumb_min_width = request()->configs()->getValueAsInt('album_thumb_min_width');
+		$this->album_thumb_gap = request()->configs()->getValueAsInt('album_thumb_gap');
 		$this->photo_thumb_info = request()->configs()->getValueAsEnum('photo_thumb_info', PhotoThumbInfoType::class);
 		$this->is_photo_thumb_tags_enabled = request()->configs()->getValueAsBool('photo_thumb_tags_enabled');
 		$this->is_rounded_corners_enabled = request()->configs()->getValueAsBool('rounded_corners_enabled');
@@ -385,7 +388,6 @@ class InitConfig extends Data
 		$this->is_album_header_landing_title_enabled = request()->configs()->getValueAsBool('album_header_landing_title_enabled');
 		$this->use_admin_dashboard = request()->configs()->getValueAsBool('use_admin_dashboard');
 		$this->is_person_album_enabled = request()->configs()->getValueAsBool('ai_vision_face_enabled');
-		$this->is_struct_of_array_enabled = Features::active('struct-of-array');
 
 		// Flags visibility settings
 		$flags_enabled = request()->configs()->getValueAsBool('flags_enabled');

@@ -12,6 +12,8 @@ use App\Actions\Diagnostics\Pipes\Checks\AdminUserExistsCheck;
 use App\Actions\Diagnostics\Pipes\Checks\AiVisionFaceRecognitionServiceCheck;
 use App\Actions\Diagnostics\Pipes\Checks\AiVisionFaceRecognitionServiceConfigCheck;
 use App\Actions\Diagnostics\Pipes\Checks\AiVisionNsfwServiceCheck;
+use App\Actions\Diagnostics\Pipes\Checks\AlbumSizeStatisticsCheck;
+use App\Actions\Diagnostics\Pipes\Checks\AlbumTakenAtRangeCheck;
 use App\Actions\Diagnostics\Pipes\Checks\AppUrlMatchCheck;
 use App\Actions\Diagnostics\Pipes\Checks\AuthDisabledCheck;
 use App\Actions\Diagnostics\Pipes\Checks\BasicPermissionCheck;
@@ -41,6 +43,7 @@ use App\Actions\Diagnostics\Pipes\Checks\StatisticsIntegrityCheck;
 use App\Actions\Diagnostics\Pipes\Checks\SupporterCheck;
 use App\Actions\Diagnostics\Pipes\Checks\TimezoneCheck;
 use App\Actions\Diagnostics\Pipes\Checks\WatermarkerEnabledCheck;
+use App\Actions\Diagnostics\Pipes\Checks\WebAuthnCredentialsCheck;
 use App\Actions\Diagnostics\Pipes\Checks\WebshopCheck;
 use App\Actions\Diagnostics\Pipes\Checks\WorkerCacheCheck;
 use App\DTO\DiagnosticData;
@@ -57,6 +60,7 @@ class Errors
 		HashCheck::class,
 		AdminUserExistsCheck::class,
 		AuthDisabledCheck::class,
+		WebAuthnCredentialsCheck::class,
 		BasicPermissionCheck::class,
 		ConfigSanityCheck::class,
 		OldLicenseCheck::class,
@@ -85,6 +89,8 @@ class Errors
 		AiVisionNsfwServiceCheck::class,
 		LocalGeoDecodingServiceCheck::class,
 		StatisticsIntegrityCheck::class,
+		AlbumSizeStatisticsCheck::class,
+		AlbumTakenAtRangeCheck::class,
 		RecomputeQueueCheck::class,
 		WorkerCacheCheck::class,
 		WebshopCheck::class,

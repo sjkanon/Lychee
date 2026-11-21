@@ -23,13 +23,18 @@ use App\Enum\SmartAlbumType;
 use App\Enum\StorageDiskType;
 use App\Models\AlbumUserThumb;
 use App\Models\Configs;
+use App\Models\Face;
+use App\Models\Person;
 use App\Models\Photo;
 use App\Models\SizeVariant;
+use App\Models\User;
 use App\Repositories\ConfigManager;
 use App\Services\TemporaryLinkSigner;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Testing\TestResponse;
 use League\Flysystem\AwsS3V3\AwsS3V3Adapter;
 use Mockery\MockInterface;
 use Tests\Feature_v3\Base\BaseApiWithDataTest;
@@ -319,43 +324,93 @@ class PhotoAssetV3Test extends BaseApiWithDataTest
 	}
 
 	/**
-	 * S-056-15: Authorized request for a size_variant stored on the S3 disk
-	 * → 302 redirect to a native S3 temporary URL, no bytes proxied through
-	 * Lychee.
+	 * Moves `$variant` to the S3 disk and fakes that disk: only the 's3'
+	 * disk is mocked, every other disk name (e.g. the 'images' local disk,
+	 * already faked in setUp()) still resolves through the real manager.
+	 * The mock exposes no read method, so any attempt to proxy the bytes
+	 * fails the test (NFR-113-02).
+	 *
+	 * @param \Closure(MockInterface): void $expectations
 	 */
-	public function testS3BackedVariantRedirectsToTemporaryUrl(): void
+	private function moveToFakeS3(SizeVariant $variant, \Closure $expectations): void
 	{
-		$variant = $this->smallVariantOf($this->photo1);
 		$variant->storage_disk = StorageDiskType::S3;
 		$variant->save();
 
 		$aws_adapter = \Mockery::mock(AwsS3V3Adapter::class);
-		$s3_disk = \Mockery::mock(FilesystemAdapter::class, function (MockInterface $mock) use ($aws_adapter, $variant): void {
+		$s3_disk = \Mockery::mock(FilesystemAdapter::class, function (MockInterface $mock) use ($aws_adapter, $expectations): void {
 			$mock->shouldReceive('getAdapter')->andReturn($aws_adapter);
-			$mock->shouldReceive('temporaryUrl')
-				->once()
-				->with($variant->short_path, \Mockery::any())
-				->andReturn('https://example-bucket.s3.amazonaws.com/signed-url');
-			// Resolving album1 also eagerly loads its cover/thumb (Album::$with),
-			// which may compute a URL for whichever photo/variant was picked as
-			// the album's thumbnail — incidental to what this test asserts, but
-			// still needs a stub since it can land on the S3 disk too.
-			$mock->shouldReceive('url')->andReturn('https://example-bucket.s3.amazonaws.com/incidental-thumb-url');
+			$expectations($mock);
 		});
 
-		// Only the 's3' disk is faked; every other disk name (e.g. the
-		// 'images' local disk, already faked in setUp()) must still resolve
-		// through the real manager, so we capture it before mocking the
-		// facade and delegate non-S3 calls to it directly.
 		$real_manager = Storage::getFacadeRoot();
 		Storage::partialMock();
 		Storage::shouldReceive('disk')->andReturnUsing(
 			fn (?string $name = null) => $name === StorageDiskType::S3->value ? $s3_disk : $real_manager->disk($name)
 		);
+	}
+
+	/**
+	 * S-113-01 (replaces S-056-15's redirect): authorized request for a
+	 * size_variant on a private S3 bucket → 200 JSON carrying S3's presigned
+	 * URL, never a redirect, never cached, no bytes proxied through Lychee.
+	 */
+	public function testS3BackedVariantAnswersWithPresignedUrl(): void
+	{
+		config(['filesystems.disks.s3.visibility' => 'private']);
+		$variant = $this->smallVariantOf($this->photo1);
+		$this->moveToFakeS3($variant, function (MockInterface $mock) use ($variant): void {
+			$mock->shouldReceive('temporaryUrl')
+				->once()
+				->with($variant->short_path, \Mockery::any())
+				->andReturn('https://example-bucket.s3.amazonaws.com/signed-url');
+		});
 
 		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/small");
 
-		$response->assertRedirect('https://example-bucket.s3.amazonaws.com/signed-url');
+		$response->assertOk();
+		$response->assertExactJson(['url' => 'https://example-bucket.s3.amazonaws.com/signed-url']);
+		$response->assertHeaderMissing('Location');
+		self::assertStringContainsString('no-store', (string) $response->headers->get('Cache-Control'));
+	}
+
+	/**
+	 * S-113-02: same on a public bucket → the bucket URL, as FR-102-05
+	 * hands out, and no presigned URL is generated.
+	 */
+	public function testS3BackedVariantOnPublicBucketAnswersWithBucketUrl(): void
+	{
+		config(['filesystems.disks.s3.visibility' => 'public']);
+		$variant = $this->smallVariantOf($this->photo1);
+		$this->moveToFakeS3($variant, function (MockInterface $mock) use ($variant): void {
+			$mock->shouldReceive('temporaryUrl')->never();
+			$mock->shouldReceive('url')
+				->once()
+				->with($variant->short_path)
+				->andReturn('https://example-bucket.s3.amazonaws.com/public-url');
+		});
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/small");
+
+		$response->assertOk();
+		$response->assertExactJson(['url' => 'https://example-bucket.s3.amazonaws.com/public-url']);
+	}
+
+	/**
+	 * S-113-04: a caller denied for an S3 variant gets 403 as before, and no
+	 * S3 URL is generated.
+	 */
+	public function testS3BackedVariantDeniedGeneratesNoUrl(): void
+	{
+		$variant = $this->smallVariantOf($this->photo2);
+		$this->moveToFakeS3($variant, function (MockInterface $mock): void {
+			$mock->shouldReceive('temporaryUrl')->never();
+			$mock->shouldReceive('url')->never();
+		});
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo2->id}/small");
+
+		$response->assertForbidden();
 	}
 
 	/**
@@ -648,45 +703,32 @@ class PhotoAssetV3Test extends BaseApiWithDataTest
 	}
 
 	/**
-	 * S3-backed variants are redirected unconditionally: PhotoAssetController
-	 * does not check S3 object existence before redirecting, and does not
-	 * fall back to a smaller local variant just because one happens to
-	 * exist — once the selected variant resolves to the S3 disk, serving it
-	 * (or 404ing on a stale/missing object) is left to the client following
-	 * the signed URL, not to Lychee.
+	 * S3-backed variants are answered unconditionally: PhotoAssetController
+	 * does not check S3 object existence before answering with the S3 URL,
+	 * and does not fall back to a smaller local variant just because one
+	 * happens to exist — once the selected variant resolves to the S3 disk,
+	 * serving it (or 404ing on a stale/missing object) is left to the client
+	 * loading that URL, not to Lychee (FR-113-01).
 	 */
-	public function testS3PrimaryRedirectsWithoutFallingBackToLocalVariant(): void
+	public function testS3PrimaryAnswersWithoutFallingBackToLocalVariant(): void
 	{
+		config(['filesystems.disks.s3.visibility' => 'private']);
 		$primary = $this->small2xVariantOf($this->photo1);
-		$primary->storage_disk = StorageDiskType::S3;
-		$primary->save();
 
 		// A local fallback variant exists and has bytes, but must not be used.
 		$this->putBytes($this->smallVariantOf($this->photo1), 'small-bytes');
 
-		$aws_adapter = \Mockery::mock(AwsS3V3Adapter::class);
-		$s3_disk = \Mockery::mock(FilesystemAdapter::class, function (MockInterface $mock) use ($aws_adapter, $primary): void {
-			$mock->shouldReceive('getAdapter')->andReturn($aws_adapter);
+		$this->moveToFakeS3($primary, function (MockInterface $mock) use ($primary): void {
 			$mock->shouldReceive('temporaryUrl')
 				->once()
 				->with($primary->short_path, \Mockery::any())
 				->andReturn('https://example-bucket.s3.amazonaws.com/primary-signed-url');
-			$mock->shouldReceive('url')->andReturn('https://example-bucket.s3.amazonaws.com/incidental-thumb-url');
 		});
-
-		// Only the 's3' disk is faked; every other disk name (e.g. the
-		// 'images' local disk, already faked in setUp()) must still resolve
-		// through the real manager, so we capture it before mocking the
-		// facade and delegate non-S3 calls to it directly.
-		$real_manager = Storage::getFacadeRoot();
-		Storage::partialMock();
-		Storage::shouldReceive('disk')->andReturnUsing(
-			fn (?string $name = null) => $name === StorageDiskType::S3->value ? $s3_disk : $real_manager->disk($name)
-		);
 
 		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/small2x");
 
-		$response->assertRedirect('https://example-bucket.s3.amazonaws.com/primary-signed-url');
+		$response->assertOk();
+		$response->assertExactJson(['url' => 'https://example-bucket.s3.amazonaws.com/primary-signed-url']);
 	}
 
 	/**
@@ -694,37 +736,371 @@ class PhotoAssetV3Test extends BaseApiWithDataTest
 	 * the primary variant that failed. PhotoAssetController::fallback()
 	 * must resolve that candidate's own disk rather than reusing the
 	 * primary's, so an S3-backed fallback variant is still recognized and
-	 * redirected correctly instead of being checked against the wrong disk.
+	 * answered with its S3 URL instead of being checked against the wrong disk.
 	 */
 	public function testFallbackVariantServedFromItsOwnDiskWhenDifferentFromPrimary(): void
 	{
+		config(['filesystems.disks.s3.visibility' => 'private']);
 		// small2x row exists on the local disk (factory default) but no bytes are put for it.
 		$fallback_variant = $this->smallVariantOf($this->photo1);
-		$fallback_variant->storage_disk = StorageDiskType::S3;
-		$fallback_variant->save();
 
-		$aws_adapter = \Mockery::mock(AwsS3V3Adapter::class);
-		$s3_disk = \Mockery::mock(FilesystemAdapter::class, function (MockInterface $mock) use ($aws_adapter, $fallback_variant): void {
-			$mock->shouldReceive('getAdapter')->andReturn($aws_adapter);
+		$this->moveToFakeS3($fallback_variant, function (MockInterface $mock) use ($fallback_variant): void {
 			$mock->shouldReceive('temporaryUrl')
 				->once()
 				->with($fallback_variant->short_path, \Mockery::any())
 				->andReturn('https://example-bucket.s3.amazonaws.com/fallback-signed-url');
-			// Resolving album1 also eagerly loads its cover/thumb (Album::$with),
-			// which may compute a URL for whichever photo/variant was picked as
-			// the album's thumbnail — incidental to what this test asserts, but
-			// still needs a stub since it can land on the S3 disk too.
-			$mock->shouldReceive('url')->andReturn('https://example-bucket.s3.amazonaws.com/incidental-thumb-url');
 		});
-
-		$real_manager = Storage::getFacadeRoot();
-		Storage::partialMock();
-		Storage::shouldReceive('disk')->andReturnUsing(
-			fn (?string $name = null) => $name === StorageDiskType::S3->value ? $s3_disk : $real_manager->disk($name)
-		);
 
 		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/small2x");
 
-		$response->assertRedirect('https://example-bucket.s3.amazonaws.com/fallback-signed-url');
+		$response->assertOk();
+		$response->assertExactJson(['url' => 'https://example-bucket.s3.amazonaws.com/fallback-signed-url']);
+	}
+
+	/**
+	 * Runs `$request` and returns its response plus the SQL of every query it
+	 * issued, except statements on the `configs` table: the config load
+	 * (FR-102-03) and the SE verification (FR-102-01) are counted by their
+	 * own tests, not by FR-102-02's budget.
+	 *
+	 * @param \Closure(): TestResponse $request
+	 *
+	 * @return array{0:TestResponse,1:list<string>}
+	 */
+	private function withQueryLog(\Closure $request): array
+	{
+		DB::flushQueryLog();
+		DB::enableQueryLog();
+		$response = $request();
+		DB::disableQueryLog();
+
+		$queries = array_map(fn (array $entry) => $entry['query'], DB::getQueryLog());
+		$queries = array_filter($queries, fn (string $sql) => preg_match('/[`"\']configs[`"\']/', $sql) !== 1);
+
+		return [$response, array_values($queries)];
+	}
+
+	/**
+	 * `actingAs()` hands the guard the user model directly, so the session
+	 * user and its groups, two of FR-102-02's queries, are never read during
+	 * the request. Preloading the groups keeps them out of the count too, and
+	 * the assertions below use FR-102-02's budget minus those two.
+	 */
+	private function asPreloaded(User $user): self
+	{
+		return $this->actingAs($user->load('user_groups'));
+	}
+
+	/**
+	 * S-102-01: owner of a regular album, at most 6 queries in production
+	 * (album, base album, access permissions, size variant with membership,
+	 * plus session user and groups).
+	 */
+	public function testOwnerStaysWithinQueryBudget(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+
+		$this->asPreloaded($this->userMayUpload1);
+		[$response, $queries] = $this->withQueryLog(fn () => $this->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/thumb"));
+
+		$response->assertOk();
+		self::assertLessThanOrEqual(4, count($queries), implode("\n", $queries));
+	}
+
+	/**
+	 * S-102-01: user the album is shared with (perm1).
+	 */
+	public function testSharedUserStaysWithinQueryBudget(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+
+		$this->asPreloaded($this->userMayUpload2);
+		[$response, $queries] = $this->withQueryLog(fn () => $this->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/thumb"));
+
+		$response->assertOk();
+		self::assertLessThanOrEqual(4, count($queries), implode("\n", $queries));
+	}
+
+	/**
+	 * S-102-01: guest on a public album, temporary links off. No session
+	 * user, so the budget is the 4 album and size-variant queries.
+	 */
+	public function testPublicGuestStaysWithinQueryBudget(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo4));
+
+		[$response, $queries] = $this->withQueryLog(fn () => $this->getV3("Asset/{$this->album4->id}/{$this->photo4->id}/thumb"));
+
+		$response->assertOk();
+		self::assertLessThanOrEqual(4, count($queries), implode("\n", $queries));
+	}
+
+	/**
+	 * S-102-02: an admin request reads the size variant only (3 queries in
+	 * production with the session user and groups).
+	 */
+	public function testAdminStaysWithinQueryBudget(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+
+		$this->asPreloaded($this->admin);
+		[$response, $queries] = $this->withQueryLog(fn () => $this->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/thumb"));
+
+		$response->assertOk();
+		self::assertLessThanOrEqual(1, count($queries), implode("\n", $queries));
+	}
+
+	/**
+	 * S-102-02: an admin's `album_id` is validated but never resolved.
+	 */
+	public function testAdminWithUnknownAlbumIdIsServed(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+
+		$response = $this->actingAs($this->admin)->getV3("Asset/000000000000000000000000/{$this->photo1->id}/thumb");
+
+		$response->assertOk();
+		self::assertSame('thumb-bytes', $response->streamedContent());
+	}
+
+	/**
+	 * S-102-02: no membership check for an admin.
+	 */
+	public function testAdminWithPhotoNotInGivenAlbumIsServed(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo2));
+
+		$response = $this->actingAs($this->admin)->getV3("Asset/{$this->album1->id}/{$this->photo2->id}/thumb");
+
+		$response->assertOk();
+	}
+
+	/**
+	 * S-102-02: the size variant is still looked up for an admin.
+	 */
+	public function testAdminMissingSizeVariantRowReturnsNotFound(): void
+	{
+		$response = $this->actingAs($this->admin)->getV3("Asset/000000000000000000000000/{$this->photo1->id}/placeholder");
+
+		$response->assertNotFound();
+	}
+
+	/**
+	 * S-102-03: membership is a selected column of the size-variant query,
+	 * not a filter, so a photo outside the album with no row for the chain
+	 * is still 404, and one with a row is still 403.
+	 */
+	public function testPhotoNotInGivenAlbumWithoutSizeVariantReturnsNotFound(): void
+	{
+		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo2->id}/placeholder");
+
+		$response->assertNotFound();
+	}
+
+	/**
+	 * S-102-03: the membership column follows the fallback walk: the
+	 * requested type has no row, the fallback row exists, and the photo is
+	 * outside the album → 403.
+	 */
+	public function testPhotoNotInGivenAlbumAfterFallbackIsForbidden(): void
+	{
+		$this->small2xVariantOf($this->photo2)->delete();
+		$this->putBytes($this->smallVariantOf($this->photo2));
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo2->id}/small2x");
+
+		$response->assertForbidden();
+	}
+
+	/**
+	 * S-102-03: the lean album load still serves a tag album's matching
+	 * photo (photo1 carries the `test` tag of tagAlbum1).
+	 */
+	public function testTagAlbumMatchingPhotoSucceeds(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->tagAlbum1->id}/{$this->photo1->id}/thumb");
+
+		$response->assertOk();
+	}
+
+	/**
+	 * S-102-03: a photo without the tag is not part of the tag album.
+	 */
+	public function testTagAlbumNonMatchingPhotoIsForbidden(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1b));
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->tagAlbum1->id}/{$this->photo1b->id}/thumb");
+
+		$response->assertForbidden();
+	}
+
+	/**
+	 * S-102-03: a person album's membership check matches its photos
+	 * through PersonAlbumMatcher.
+	 */
+	public function testPersonAlbumPhotoIsServed(): void
+	{
+		Configs::set('ai_vision_enabled', '1');
+		Configs::set('ai_vision_face_enabled', '1');
+		$person = Person::factory()->create(['name' => 'Alice', 'is_searchable' => true]);
+		Face::factory()->for_photo($this->photo1)->for_person($person)->create();
+		$person_album_id = $this->actingAs($this->userMayUpload1)->postJson('PersonAlbum', [
+			'title' => 'person_album_asset_test',
+			'persons' => [$person->id],
+			'is_and' => false,
+		])->getOriginalContent();
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+
+		app()->forgetScopedInstances();
+		$this->actingAs($this->userMayUpload1)->getV3("Asset/{$person_album_id}/{$this->photo1->id}/thumb")->assertOk();
+	}
+
+	/**
+	 * S-102-04: the locale is still set from `lang`.
+	 */
+	public function testLocaleStillResolved(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+		Configs::set('lang', 'fr');
+
+		try {
+			app()->forgetScopedInstances();
+			$this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/thumb")->assertOk();
+			self::assertSame('fr', app()->getLocale());
+		} finally {
+			Configs::set('lang', 'en');
+			app()->setLocale('en');
+		}
+	}
+
+	private function thumbUri(): string
+	{
+		return "Asset/{$this->album1->id}/{$this->photo1->id}/thumb";
+	}
+
+	private function thumbMtime(): int
+	{
+		return Storage::disk(StorageDiskType::LOCAL->value)->lastModified($this->thumbVariantOf($this->photo1)->short_path);
+	}
+
+	private function assertNotCacheable(TestResponse $response): void
+	{
+		self::assertStringNotContainsString('max-age=3600', (string) $response->headers->get('Cache-Control'));
+		self::assertFalse($response->headers->has('Last-Modified'));
+	}
+
+	/**
+	 * S-102-06: a served file is privately cacheable for an hour and carries
+	 * its mtime.
+	 */
+	public function testServedFileIsCacheable(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3($this->thumbUri());
+
+		$response->assertOk();
+		$cache_control = (string) $response->headers->get('Cache-Control');
+		self::assertStringContainsString('private', $cache_control);
+		self::assertStringContainsString('max-age=3600', $cache_control);
+		self::assertSame(gmdate('D, d M Y H:i:s', $this->thumbMtime()) . ' GMT', $response->headers->get('Last-Modified'));
+		self::assertNotNull($response->headers->get('ETag'));
+	}
+
+	/**
+	 * S-102-07: `If-Modified-Since` not older than the file → 304, no body.
+	 */
+	public function testUnchangedFileIsNotModified(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+		$since = gmdate('D, d M Y H:i:s', $this->thumbMtime()) . ' GMT';
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3($this->thumbUri(), ['If-Modified-Since' => $since]);
+
+		$response->assertStatus(304);
+		self::assertSame('', $response->streamedContent());
+	}
+
+	/**
+	 * S-102-07: matching `If-None-Match` and `If-Modified-Since` → 304.
+	 */
+	public function testMatchingETagIsNotModified(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+		$first = $this->actingAs($this->userMayUpload1)->getV3($this->thumbUri());
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3($this->thumbUri(), [
+			'If-None-Match' => $first->headers->get('ETag'),
+			'If-Modified-Since' => $first->headers->get('Last-Modified'),
+		]);
+
+		$response->assertStatus(304);
+	}
+
+	/**
+	 * S-102-07: the same URL now selecting another file (watermark switched
+	 * on) → 200 with that file, even when it is not newer.
+	 */
+	public function testOtherSelectedFileIsServedAgain(): void
+	{
+		$variant = $this->smallVariantOf($this->photo1);
+		$variant->short_path_watermarked = 'watermarked/' . $variant->short_path;
+		$variant->save();
+		Storage::disk(StorageDiskType::LOCAL->value)->put($variant->short_path_watermarked, 'watermarked-bytes');
+		Storage::disk(StorageDiskType::LOCAL->value)->put($variant->short_path, 'plain-bytes');
+		$uri = "Asset/{$this->album1->id}/{$this->photo1->id}/small";
+		$first = $this->actingAs($this->userMayUpload1)->getV3($uri);
+		self::assertSame('plain-bytes', $first->streamedContent());
+
+		Configs::set('watermark_enabled', '1');
+		Configs::set('watermark_logged_in_users_enabled', '1');
+		$response = $this->actingAs($this->userMayUpload1)->getV3($uri, [
+			'If-None-Match' => $first->headers->get('ETag'),
+			'If-Modified-Since' => $first->headers->get('Last-Modified'),
+		]);
+
+		$response->assertOk();
+		self::assertSame('watermarked-bytes', $response->streamedContent());
+	}
+
+	/**
+	 * S-102-07: `If-Modified-Since` older than the file → 200 with the bytes.
+	 */
+	public function testChangedFileIsServedAgain(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+		$since = gmdate('D, d M Y H:i:s', $this->thumbMtime() - 3600) . ' GMT';
+
+		$response = $this->actingAs($this->userMayUpload1)->getV3($this->thumbUri(), ['If-Modified-Since' => $since]);
+
+		$response->assertOk();
+		self::assertSame('thumb-bytes', $response->streamedContent());
+	}
+
+	/**
+	 * S-102-07: authorization runs before the `If-Modified-Since` check, and
+	 * errors are not cacheable.
+	 */
+	public function testErrorsIgnoreIfModifiedSinceAndAreNotCacheable(): void
+	{
+		$this->putBytes($this->thumbVariantOf($this->photo1));
+		$since = gmdate('D, d M Y H:i:s', $this->thumbMtime() + 3600) . ' GMT';
+
+		Configs::set('temporary_image_link_enabled', '1');
+		$unauthorized = $this->getV3("Asset/{$this->album4->id}/{$this->photo4->id}/thumb", ['If-Modified-Since' => $since]);
+		$unauthorized->assertUnauthorized();
+		$this->assertNotCacheable($unauthorized);
+		Configs::set('temporary_image_link_enabled', '0');
+
+		$forbidden = $this->actingAs($this->userMayUpload2)->getV3("Asset/{$this->album1->id}/{$this->photo2->id}/thumb", ['If-Modified-Since' => $since]);
+		$forbidden->assertForbidden();
+		$this->assertNotCacheable($forbidden);
+
+		$not_found = $this->actingAs($this->userMayUpload1)->getV3("Asset/{$this->album1->id}/{$this->photo1->id}/placeholder", ['If-Modified-Since' => $since]);
+		$not_found->assertNotFound();
+		$this->assertNotCacheable($not_found);
 	}
 }

@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: audit
 
@@ -36,6 +36,15 @@ jobs:
           # The Vite that actually runs is the 8.x bundled by Vite+. A new Vite
           # advisory whose range starts below 1.x matches again until its ID is
           # added here (docs/specs/4-architecture/features/096-vite-plus-migration/open-questions.md, Q-096-07).
+          #
+          # Not an allow-list entry, recorded here because package.json takes
+          # no comments: the `overrides.js-beautify` block (editorconfig ^4,
+          # glob ^14) lifts minimatch from 10.2.6 to 11.x and so clears
+          # GHSA-g3hv-75wg-m249. js-beautify 2.0.3 (via @vue/test-utils, dev
+          # only) still pins editorconfig ^3 and glob ^13, which need
+          # minimatch 10. Both are loaded only by js-beautify's CLI, which
+          # nothing here runs. Remove the override once js-beautify depends on
+          # editorconfig >= 4 and glob >= 14.
           allow-ghsas: >-
             GHSA-g7r4-m6w7-qqqr,
             GHSA-mv48-hcvh-8jj8,
@@ -53,4 +62,9 @@ jobs:
             GHSA-4w7w-66w2-5vf9,
             GHSA-v6wh-96g9-6wx3,
             GHSA-jqfw-vq24-v9c3,
-            GHSA-g4jq-h2w9-997c
+            GHSA-g4jq-h2w9-997c,
+            GHSA-587h-7wmj-h5pm,
+            GHSA-r825-w8mm-5pxw,
+            GHSA-698v-4r3x-3vcv,
+            GHSA-rq7h-c2jc-7f22,
+            GHSA-9jrq-w75r-8gcw

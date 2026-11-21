@@ -9,10 +9,11 @@
 namespace App\Http\Controllers\Traits;
 
 use App\Enum\SizeVariantType;
+use App\Http\Resources\V3\AssetUrlResource;
 use App\Image\Files\FlysystemFile;
 use App\Image\Watermarker;
 use App\Models\SizeVariant;
-use App\Repositories\ConfigManager;
+use App\Services\UrlGenerator;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Storage;
@@ -20,13 +21,17 @@ use League\Flysystem\AwsS3V3\AwsS3V3Adapter;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
- * Serves a resolved size variant file: local file response, temporary
- * redirect for S3, watermarked path, and the size fallback chain when a
- * file is missing. Shared by `GET /api/v3/Asset/...` (Feature 056) and
- * `GET /api/v3/Faces/{face_id}/photo/{variant}` (Feature 093, ADR-093-01).
+ * Serves a resolved size variant file: local file response, the S3 URL as
+ * JSON for S3 (Feature 113, ADR-113-01), watermarked path, and the size
+ * fallback chain when a file is missing. Shared by `GET /api/v3/Asset/...`
+ * (Feature 056) and `GET /api/v3/Faces/{face_id}/photo/{variant}`
+ * (Feature 093, ADR-093-01).
  */
 trait ServesSizeVariantAssetTrait
 {
+	/** Seconds the browser may reuse a served file without asking again. */
+	private const ASSET_MAX_AGE = 3600;
+
 	/**
 	 * Serve `$size_variant`, falling back to smaller sizes when its file is missing.
 	 *
@@ -91,10 +96,7 @@ trait ServesSizeVariantAssetTrait
 
 		/** @disregard P1013 */
 		if ($disk->getAdapter() instanceof AwsS3V3Adapter) {
-			$life_in_seconds = resolve(ConfigManager::class)->getValueAsInt('temporary_image_link_life_in_seconds');
-
-			/** @disregard P1013 */
-			return redirect()->away($disk->temporaryUrl($path, now()->addSeconds($life_in_seconds)));
+			return $this->responseS3Url($path, $size_variant->storage_disk->value);
 		}
 
 		if (!$disk->exists($path)) {
@@ -105,7 +107,36 @@ trait ServesSizeVariantAssetTrait
 	}
 
 	/**
+	 * Hand the S3 location to the client instead of redirecting to it
+	 * (Feature 113, FR-113-01, ADR-113-01): the client fetches `/Asset` by
+	 * XHR to send the MAC, and an XHR following a redirect to the bucket
+	 * needs a CORS rule there and carries Lychee's headers to it. The client
+	 * renders this URL with a plain `<img src>` instead.
+	 *
+	 * Same URL as `GET /Albums/{album_id}/Photos/urls` (FR-102-05): the
+	 * bucket URL on a public bucket, S3's presigned URL otherwise. Never
+	 * stored, since a presigned URL is minted per request.
+	 *
+	 * @param string $path         watermark-aware path on the disk
+	 * @param string $storage_disk name of the S3 disk
+	 *
+	 * @return JsonResponse
+	 */
+	private function responseS3Url(string $path, string $storage_disk): JsonResponse
+	{
+		$url = resolve(UrlGenerator::class)->getAwsUrl($path, $storage_disk);
+
+		return response()->json(new AssetUrlResource(url: $url), 200, ['Cache-Control' => 'no-store, private']);
+	}
+
+	/**
 	 * Return the damn file!
+	 *
+	 * Privately cacheable for an hour, with the file's mtime as
+	 * `Last-Modified` and an `ETag` of the served path, mtime and size, so
+	 * a URL that now selects another file (watermark) never answers `304`
+	 * for the old one; a request whose validators still match gets an empty
+	 * `304` (Feature 102, FR-102-04). Authorization already ran.
 	 *
 	 * @param FilesystemAdapter $disk
 	 * @param string            $path
@@ -116,6 +147,14 @@ trait ServesSizeVariantAssetTrait
 	{
 		$file = new FlysystemFile($disk, $path);
 
-		return response()->file($file->toLocalFile()->getPath());
+		$response = response()->file($file->toLocalFile()->getPath());
+		$served = $response->getFile();
+		$response->setPrivate();
+		$response->setMaxAge(self::ASSET_MAX_AGE);
+		$response->setAutoLastModified();
+		$response->setEtag(hash('xxh128', $path . '|' . $served->getMTime() . '|' . $served->getSize()));
+		$response->isNotModified(request());
+
+		return $response;
 	}
 }
